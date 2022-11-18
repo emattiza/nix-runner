@@ -5,11 +5,14 @@ edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
+[lib]
+name = "nix_runner"
+path = "rust-src/lib/mod.rs"
+
 [[bin]]
-name="nix-runner"
-path="rust-src/main.rs"
+name = "nix-runner"
+path = "rust-src/main.rs"
 
 [dependencies]
 clap = { version = "4.0.24", features = ["cargo"]}
-pest = "2.4.1"
-pest_derive = "2.4.1"
+nom = { version = "7.1.1" }

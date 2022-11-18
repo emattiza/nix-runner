@@ -1,12 +1,6 @@
-use clap::{arg, builder::Command};
-extern crate pest;
-#[macro_use]
-extern crate pest_derive;
-use pest::Parser;
+use nix_runner;
 
-#[derive(Parser)]
-#[grammar = "rust-src/grammar/grammar.pest"]
-struct NixRunnerParser;
+use clap::{arg, builder::Command};
 
 fn build_cli() -> Command {
     Command::new("nix-runner")
@@ -28,7 +22,7 @@ fn main() {
 
 #[cfg(test)]
 mod test {
-    use crate::{build_cli, NixRunnerParser};
+    use crate::build_cli;
 
     #[test]
     fn test_gets_script_and_subcommand_args() {
@@ -38,10 +32,5 @@ mod test {
         let commands: Vec<_> = matches.get_many::<String>("cmd").unwrap().collect();
         assert_eq!(script, "test.py");
         assert_eq!(commands, vec!["--poo", "pee"]);
-    }
-    #[test]
-    fn test_parses_simple_file() {
-        let parse = NixRunnerParser::parse(Rule::field, "-273.15");
-        assert_eq!(parse, "-273.15")
     }
 }
