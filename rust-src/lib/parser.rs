@@ -7,18 +7,39 @@ use nom::{
     AsChar, IResult,
 };
 
+#[derive(Debug, PartialEq, Clone)]
+pub struct NixOption {
+    key: String,
+    value: String,
+}
+
+#[derive(Debug, PartialEq, Clone)]
+pub struct NixRegistryRef {
+    old_ref: String,
+    new_ref: String,
+}
+
 #[derive(Debug, PartialEq)]
 pub struct NixRunnerArgs {
     // #!pure (optional, once)
     pure: Option<bool>,
     // #!nix-option <key> <value> (optional, repeated)
-    nix_option: Vec<(String, String)>,
+    nix_option: Vec<NixOption>,
     // #!registry <old-ref> <new-ref> (optional, repeated)
-    registry: Vec<(String, String)>,
+    registry: Vec<NixRegistryRef>,
     // #!package <pkg-name> (optional, repeated)
     package: Vec<String>,
     // #!command <cmd-name> (optional, once)
     command: Option<String>,
+}
+
+#[derive(Debug, PartialEq, Clone)]
+pub enum ShebangArg {
+    PureLine(bool),
+    NixOptionLine(NixOption),
+    NixRegistryLine(NixRegistryRef),
+    PackageLine(String),
+    CommandLine(String),
 }
 
 impl Default for NixRunnerArgs {
@@ -46,9 +67,9 @@ fn shebang_commands(i: &str) -> IResult<&str, &str> {
     return Ok(("", cap));
 }
 
-fn pure_match(i: &str) -> IResult<&str, Option<bool>> {
+fn pure_match(i: &str) -> IResult<&str, ShebangArg> {
     let (_cap, rest) = shebang_commands(i)?;
-    value(Some(true), tag("pure"))(rest)
+    value(ShebangArg::PureLine(true), tag("pure"))(rest)
 }
 
 fn command_identifier(i: &str) -> IResult<&str, String> {
@@ -58,22 +79,22 @@ fn command_identifier(i: &str) -> IResult<&str, String> {
     .map(|(cap, chars)| (cap, chars.into_iter().collect()))
 }
 
-fn command_match(i: &str) -> IResult<&str, Option<String>> {
+fn command_match(i: &str) -> IResult<&str, ShebangArg> {
     let (_cap, rest) = shebang_commands(i)?;
     let (script_name, _rest) = tag("command ")(rest)?;
     let (rest, name) = command_identifier(script_name)?;
-    Ok((rest, Some(name)))
+    Ok((rest, ShebangArg::CommandLine(name)))
 }
 
 fn package_identifier(i: &str) -> IResult<&str, String> {
     command_identifier(i)
 }
 
-fn package_match(i: &str) -> IResult<&str, String> {
+fn package_match(i: &str) -> IResult<&str, ShebangArg> {
     let (_cap, rest) = shebang_commands(i)?;
     let (script_name, _rest) = tag("package ")(rest)?;
     let (rest, name) = command_identifier(script_name)?;
-    Ok((rest, name))
+    Ok((rest, ShebangArg::PackageLine(name)))
 }
 
 fn nix_url_reference_identifier(i: &str) -> IResult<&str, String> {
@@ -90,7 +111,7 @@ fn nix_url_reference_identifier(i: &str) -> IResult<&str, String> {
     .map(|(cap, chars)| (cap, chars.into_iter().collect()))
 }
 
-fn registry_match(i: &str) -> IResult<&str, (String, String)> {
+fn registry_match(i: &str) -> IResult<&str, ShebangArg> {
     let (_cap, rest) = shebang_commands(i)?;
     let (references_remainder, _rest) = tag("registry ")(rest)?;
     let (rest, (old_ref, new_ref)) = separated_pair(
@@ -98,10 +119,11 @@ fn registry_match(i: &str) -> IResult<&str, (String, String)> {
         satisfy(|c| c == ' '),
         nix_url_reference_identifier,
     )(references_remainder)?;
-    Ok((rest, (old_ref, new_ref)))
+    let registry_ref = NixRegistryRef { old_ref, new_ref };
+    Ok((rest, ShebangArg::NixRegistryLine(registry_ref)))
 }
 
-fn nix_option_match(i: &str) -> IResult<&str, (String, String)> {
+fn nix_option_match(i: &str) -> IResult<&str, ShebangArg> {
     let (_cap, rest) = shebang_commands(i)?;
     let (kv_remainder, _rest) = tag("nix-option ")(rest)?;
     let (rest, (key, value)) = separated_pair(
@@ -109,7 +131,12 @@ fn nix_option_match(i: &str) -> IResult<&str, (String, String)> {
         satisfy(|c| c == ' '),
         command_identifier,
     )(kv_remainder)?;
-    Ok((rest, (key, value)))
+    Ok((rest, ShebangArg::NixOptionLine(NixOption { key, value })))
+}
+
+fn parse_nix_runner_file(i: &str) -> IResult<&str, NixRunnerArgs> {
+    let mut default = NixRunnerArgs::default();
+    Ok(("", default))
 }
 
 #[cfg(test)]
@@ -123,6 +150,9 @@ mod test {
     use super::registry_match;
     use super::shebang_commands;
     use super::shebang_sequence;
+    use super::NixOption;
+    use super::NixRegistryRef;
+    use super::ShebangArg;
 
     #[test]
     fn test_bash_comment() {
@@ -144,19 +174,22 @@ mod test {
     #[test]
     fn test_pure_match() {
         let results = pure_match("#!pure").map(|(_, opt)| opt);
-        assert_eq!(Ok(Some(true)), results)
+        let expected = Ok(ShebangArg::PureLine(true));
+        assert_eq!(expected, results)
     }
 
     #[test]
     fn test_command_match() {
         let results = command_match("#!command bash").map(|(_, opt)| opt);
-        assert_eq!(Ok(Some("bash".to_string())), results);
+        let expected = Ok(ShebangArg::CommandLine("bash".to_string()));
+        assert_eq!(expected, results);
     }
 
     #[test]
     fn test_package_match() {
         let results = package_match("#!package bash").map(|(_, opt)| opt);
-        assert_eq!(Ok("bash".to_string()), results)
+        let expected = Ok(ShebangArg::PackageLine("bash".to_string()));
+        assert_eq!(expected, results)
     }
 
     #[test]
@@ -167,15 +200,19 @@ mod test {
         let shebang_line = format!("#!registry {} {}", old_ref, new_ref);
 
         let results = registry_match(shebang_line.as_str()).map(|(_, opt)| opt);
-        assert_eq!(Ok((old_ref, new_ref)), results)
+        let expected = Ok(ShebangArg::NixRegistryLine(NixRegistryRef {
+            old_ref,
+            new_ref,
+        }));
+        assert_eq!(expected, results)
     }
     #[test]
     fn test_option_match() {
         let key = "experimental-features".to_string();
         let value = "flakes".to_string();
         let shebang_line = format!("#!nix-option {} {}", key, value);
-        dbg!(shebang_line.clone());
         let results = nix_option_match(shebang_line.as_str()).map(|(_, opt)| opt);
-        assert_eq!(Ok((key, value)), results)
+        let expected = Ok(ShebangArg::NixOptionLine(NixOption { key, value }));
+        assert_eq!(expected, results)
     }
 }
