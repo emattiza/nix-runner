@@ -1,8 +1,9 @@
 use nom::{
+    branch::alt,
     bytes::complete::tag,
-    character::complete::{char, satisfy},
-    combinator::value,
-    multi::many1,
+    character::complete::{anychar, char, line_ending, satisfy},
+    combinator::{complete, eof, value},
+    multi::{many1, many_till, separated_list0},
     sequence::separated_pair,
     AsChar, IResult,
 };
@@ -111,7 +112,7 @@ fn nix_url_reference_identifier(i: &str) -> IResult<&str, String> {
     .map(|(cap, chars)| (cap, chars.into_iter().collect()))
 }
 
-fn registry_match(i: &str) -> IResult<&str, ShebangArg> {
+fn nix_registry_match(i: &str) -> IResult<&str, ShebangArg> {
     let (_cap, rest) = shebang_commands(i)?;
     let (references_remainder, _rest) = tag("registry ")(rest)?;
     let (rest, (old_ref, new_ref)) = separated_pair(
@@ -134,20 +135,62 @@ fn nix_option_match(i: &str) -> IResult<&str, ShebangArg> {
     Ok((rest, ShebangArg::NixOptionLine(NixOption { key, value })))
 }
 
+fn any_arg_match(i: &str) -> IResult<&str, ShebangArg> {
+    let matches = (
+        nix_option_match,
+        nix_registry_match,
+        pure_match,
+        command_match,
+        package_match,
+    );
+    alt(matches)(i)
+}
+
+fn many_arg_match(i: &str) -> IResult<&str, Vec<ShebangArg>> {
+    separated_list0(line_ending, any_arg_match)(i)
+}
+
 fn parse_nix_runner_file(i: &str) -> IResult<&str, NixRunnerArgs> {
     let mut default = NixRunnerArgs::default();
-    Ok(("", default))
+    let (_, rest) = shebang_sequence(i)?;
+    let (rest, _) = many_till(anychar, line_ending)(rest)?;
+    let (rest, args) = many_arg_match(rest)?;
+    let (rest, _) = line_ending(rest)?;
+    let (rest, body): (&str, (Vec<char>, &str)) = complete(many_till(anychar, eof))(rest)?;
+
+    for arg in args {
+        match arg {
+            ShebangArg::PureLine(purity) => {
+                default.pure = Some(purity);
+            }
+            ShebangArg::NixOptionLine(option) => {
+                default.nix_option.push(option);
+            }
+            ShebangArg::NixRegistryLine(registry_ref) => {
+                default.registry.push(registry_ref);
+            }
+            ShebangArg::PackageLine(package) => {
+                default.package.push(package);
+            }
+            ShebangArg::CommandLine(command) => {
+                default.command = Some(command);
+            }
+        }
+    }
+    Ok((rest, default))
 }
 
 #[cfg(test)]
 mod test {
+    use crate::parser::any_arg_match;
     use crate::parser::nix_option_match;
 
     use super::command_match;
     use super::comment_char;
+    use super::many_arg_match;
+    use super::nix_registry_match;
     use super::package_match;
     use super::pure_match;
-    use super::registry_match;
     use super::shebang_commands;
     use super::shebang_sequence;
     use super::NixOption;
@@ -199,7 +242,7 @@ mod test {
             "github:NixOS/nixpkgs/0080a93cdf255b27e466116250b14b2bcd7b843b?dir=modules".to_string();
         let shebang_line = format!("#!registry {} {}", old_ref, new_ref);
 
-        let results = registry_match(shebang_line.as_str()).map(|(_, opt)| opt);
+        let results = nix_registry_match(shebang_line.as_str()).map(|(_, opt)| opt);
         let expected = Ok(ShebangArg::NixRegistryLine(NixRegistryRef {
             old_ref,
             new_ref,
@@ -213,6 +256,26 @@ mod test {
         let shebang_line = format!("#!nix-option {} {}", key, value);
         let results = nix_option_match(shebang_line.as_str()).map(|(_, opt)| opt);
         let expected = Ok(ShebangArg::NixOptionLine(NixOption { key, value }));
+        assert_eq!(expected, results)
+    }
+
+    #[test]
+    fn test_any_arg_match() {
+        let results = any_arg_match("#!command bash").map(|(_, opt)| opt);
+        let expected = Ok(ShebangArg::CommandLine("bash".to_string()));
+        assert_eq!(expected, results);
+    }
+
+    #[test]
+    fn test_many_arg_match() {
+        let results = many_arg_match("#!package bash\n#!command bash\nset -euox pipefail");
+        let expected = Ok((
+            "\nset -euox pipefail",
+            vec![
+                ShebangArg::PackageLine("bash".to_string()),
+                ShebangArg::CommandLine("bash".to_string()),
+            ],
+        ));
         assert_eq!(expected, results)
     }
 }
