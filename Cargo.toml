@@ -10,4 +10,6 @@ name="nix-runner"
 path="rust-src/main.rs"
 
 [dependencies]
-clap = "4.0.24"
+clap = { version = "4.0.24", features = ["cargo"]}
+pest = "2.4.1"
+pest_derive = "2.4.1"
